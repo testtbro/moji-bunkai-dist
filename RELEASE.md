@@ -1,24 +1,31 @@
-# リリース手順（更新の公開 → 更新通知）
+# リリース手順（GitHub Releases + 更新通知）
 
-このリポジトリは配布物（署名済みZXP）と更新通知（`mojibunkai/latest.json`）を置く場所です。
-ソースは非公開リポジトリ `adobe-plugins` にあり、ビルドはそちらで行います。
+配布は **GitHub Releases** で行います。各バージョンのZXPは Release `v<version>` の
+アセットとして公開し、更新通知は `mojibunkai/latest.json`（署名付き）が指し示します。
+リポジトリ本体にはバイナリを残しません（履歴にのみ残ります）。
 
 ## 一度だけの設定
 
 GitHub の **Settings → Secrets and variables → Actions → New repository secret**
 - `ADMIN_TOKEN` … ライセンスサーバー（Worker）の管理トークン
 
-（WorkerのURLが変わったら、同画面の **Variables** に `WORKER_URL` を追加して上書きできます。）
+（WorkerのURLが変わったら **Variables** に `WORKER_URL` を追加して上書き。）
 
-## 毎回のリリース（担当：Claude がコミット/実行まで行う）
+## 毎回のリリース（担当：Claude）
 
-1. **ソース側**（`adobe-plugins`）でバージョンを上げ、署名・難読化済みZXPをビルド
-   （`illustrator/MojiBunkai/tools/release.sh <version>` が、ビルドしてこのリポジトリへ
-   `mojibunkai/MojiBunkai-<version>.zxp` をコミット/pushするところまで行います）。
-2. **更新通知を公開**：GitHub の **Actions → Publish update → Run workflow** で
-   `version`（例 `1.3.0`）と任意の `notes` を入力して実行。
-   - これが Worker に `latest.json` を署名させ、`mojibunkai/latest.json` をコミットします。
-   - 秘密鍵は Worker の中だけ、`ADMIN_TOKEN` は GitHub Secrets の中だけで、外に出ません。
+1. **ソース側**（`adobe-plugins`）でバージョンを上げ、署名・難読化ZXPをビルドし、
+   このリポジトリへ `mojibunkai/MojiBunkai-<version>.zxp` を一時的にコミット/push
+   （`illustrator/MojiBunkai/tools/release.sh <version>` が実行）。
+2. **Actions → Publish update → Run workflow** に `version`（例 `1.3.0`）と `notes` を入力して実行。
+   ワークフローが自動で：
+   - Release `v<version>` を作成し、ZXPをアセットとして添付
+   - `latest.json` を **Releaseアセットのurl** で署名（Worker経由）してコミット
+   - リポジトリ本体から一時ZXPを削除
 3. 既存ユーザーには次回起動時に「<version> が利用できます」の通知が出ます。
 
-> ZXP が未コミットのバージョンを指定すると、ワークフローはエラーで止まります（先に手順1）。
+## 配布URL
+
+- ダウンロード：`https://github.com/testtbro/moji-bunkai-dist/releases`（各Releaseのアセット）
+- 更新通知（プラグインが参照）：`https://raw.githubusercontent.com/testtbro/moji-bunkai-dist/main/mojibunkai/latest.json`
+
+> 秘密鍵は Worker の中だけ、`ADMIN_TOKEN` は GitHub Secrets の中だけで、外に出ません。
