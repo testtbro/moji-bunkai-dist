@@ -1,5 +1,0 @@
-{
-  "license_api": "https://REPLACE-AFTER-DEPLOY.workers.dev/activate",
-  "update_manifest_url": "https://raw.githubusercontent.com/testtbro/moji-bunkai-dist/main/mojibunkai/latest.json",
-  "dist_page": "https://github.com/testtbro/moji-bunkai-dist"
-}
