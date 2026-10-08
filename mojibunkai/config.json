@@ -1,5 +1,6 @@
 {
   "license_api": "https://plugin-licensing.lnidasan.workers.dev/activate",
   "update_manifest_url": "https://raw.githubusercontent.com/testtbro/moji-bunkai-dist/main/mojibunkai/latest.json",
-  "dist_page": "https://github.com/testtbro/moji-bunkai-dist"
+  "dist_page": "https://github.com/testtbro/moji-bunkai-dist",
+  "token": "eyJ2IjoxLCJraW5kIjoiZW5kcG9pbnRzIiwicHJvZHVjdCI6Im1vamlidW5rYWkiLCJsaWNlbnNlX2FwaSI6Imh0dHBzOi8vcGx1Z2luLWxpY2Vuc2luZy5sbmlkYXNhbi53b3JrZXJzLmRldi9hY3RpdmF0ZSIsInVwZGF0ZV9tYW5pZmVzdF91cmwiOiJodHRwczovL3Jhdy5naXRodWJ1c2VyY29udGVudC5jb20vdGVzdHRicm8vbW9qaS1idW5rYWktZGlzdC9tYWluL21vamlidW5rYWkvbGF0ZXN0Lmpzb24iLCJkaXN0X3BhZ2UiOiJodHRwczovL2dpdGh1Yi5jb20vdGVzdHRicm8vbW9qaS1idW5rYWktZGlzdCIsImlzc3VlZEF0IjoiMjAyNi0xMC0wOFQxMTozNDo1Ny4xOTZaIn0.oVguJvoTgCjxyb6o51M8pX2UZP1KTDWsU1nNe5jMMMQOGNI6xeUv_vawyT0eM3n9NDuIaUseY6ZVGgImRO4LDA"
 }
