@@ -1,20 +1,18 @@
 # Publishes a plugin update:
-#   1. creates a GitHub Release v<version> and uploads the ZXP as its asset,
-#   2. signs mojibunkai/latest.json (pointing at the release asset URL) by
-#      calling the licensing Worker's /admin/release,
-#   3. commits latest.json and removes the ZXP from the repo tree (binaries
-#      live only as Release assets, not in the working tree).
+#   1. checks the inputs and that the committed ZXP has the expected SHA-256,
+#   2. checks mojibunkai/config.json is signed (re-signs it only on request),
+#   3. creates a GitHub Release v<version> with the ZXP as its asset,
+#   4. signs mojibunkai/latest.json (asset URL + SHA-256) via the licensing
+#      Worker's /admin/release,
+#   5. commits latest.json / config.json and removes the ZXP from the tree.
 #
 # The signing secret never leaves the Worker; this workflow only sends
-# ADMIN_TOKEN (a GitHub Actions secret, never in the repo or in chat).
-#
-# One-time setup: Settings -> Secrets and variables -> Actions ->
-#   New repository secret:  name ADMIN_TOKEN, value = the Worker admin token.
-#   (optional) Variables -> WORKER_URL if the Worker URL ever changes.
+# ADMIN_TOKEN, which lives in the "release" environment (see RELEASE.md), so
+# each run waits for the owner's approval before it can use it.
 #
 # Prerequisite each release: the built ZXP for <version> is committed at
-#   mojibunkai/MojiBunkai-<version>.zxp  (Claude / release.sh pushes it first).
-#   This workflow moves it into the Release and deletes it from the tree.
+#   mojibunkai/MojiBunkai-<version>.zxp  (release.sh pushes it and prints the
+#   SHA-256 to pass as the sha256 input).
 name: Publish update
 
 on:
@@ -22,6 +20,9 @@ on:
     inputs:
       version:
         description: "Plugin version to release (e.g. 1.3.0)"
+        required: true
+      sha256:
+        description: "SHA-256 of the ZXP (printed by release.sh)"
         required: true
       notes:
         description: "Release notes (shown on the Release page and in the panel)"
@@ -31,6 +32,10 @@ on:
         description: "Mark as a mandatory update"
         type: boolean
         default: false
+      update_endpoints:
+        description: "Re-sign mojibunkai/config.json (only after changing its URLs on purpose)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -38,22 +43,76 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: release
     env:
       VERSION: ${{ inputs.version }}
+      ZXP_SHA256: ${{ inputs.sha256 }}
       NOTES: ${{ inputs.notes }}
+      WORKER_URL: ${{ vars.WORKER_URL || 'https://plugin-licensing.lnidasan.workers.dev' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Locate the built ZXP
+      - name: Validate inputs and the built ZXP
         run: |
           set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like 1.3.0"; exit 1
+          fi
+          sha="$(printf '%s' "$ZXP_SHA256" | tr 'A-F' 'a-f')"
+          if ! [[ "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::sha256 must be 64 hex characters"; exit 1
+          fi
           ZXP="mojibunkai/MojiBunkai-${VERSION}.zxp"
           if [ ! -f "$ZXP" ]; then
             echo "::error::$ZXP not found. Build and commit the ZXP for this version first (release.sh)."
             exit 1
           fi
-          echo "ZXP=$ZXP" >> "$GITHUB_ENV"
-          echo "TAG=v${VERSION}" >> "$GITHUB_ENV"
+          actual="$(sha256sum "$ZXP" | cut -d' ' -f1)"
+          if [ "$actual" != "$sha" ]; then
+            echo "::error::$ZXP has SHA-256 $actual, expected $sha. Refusing to publish."
+            exit 1
+          fi
+          {
+            echo "ZXP=$ZXP"
+            echo "TAG=v${VERSION}"
+            echo "ZXP_SHA256=$sha"
+          } >> "$GITHUB_ENV"
+
+      - name: Check the signed endpoints file
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          UPDATE_ENDPOINTS: ${{ inputs.update_endpoints }}
+        run: |
+          set -euo pipefail
+          CFG=mojibunkai/config.json
+          want="$(jq -c '{license_api, update_manifest_url, dist_page}' "$CFG")"
+          tok="$(jq -r '.token // ""' "$CFG")"
+          signed=null
+          if [ -n "$tok" ]; then
+            b="${tok%%.*}"
+            while [ $(( ${#b} % 4 )) -ne 0 ]; do b="${b}="; done
+            signed="$(printf '%s' "$b" | tr '_-' '/+' | base64 -d | jq -c '{license_api, update_manifest_url, dist_page}')"
+          fi
+          if [ "$signed" = "$want" ]; then
+            echo "config.json is signed and unchanged."
+            exit 0
+          fi
+          if [ "$UPDATE_ENDPOINTS" != "true" ]; then
+            echo "::error::config.json URLs differ from its signed copy. If you changed them on purpose, run again with update_endpoints."
+            echo "signed : $signed"
+            echo "in file: $want"
+            exit 1
+          fi
+          body="$(jq -c --arg p mojibunkai '{product:$p, license_api, update_manifest_url, dist_page}' "$CFG")"
+          resp="$(curl -sS -X POST "${WORKER_URL%/}/admin/endpoints" \
+            -H "authorization: Bearer ${ADMIN_TOKEN}" -H 'content-type: application/json' -d "$body")"
+          if ! printf '%s' "$resp" | jq -e '.ok == true' >/dev/null 2>&1; then
+            echo "::error::signing config.json failed: $(printf '%s' "$resp" | jq -r '.error // "unknown"')"
+            exit 1
+          fi
+          jq --arg t "$(printf '%s' "$resp" | jq -r .token)" '.token = $t' "$CFG" > "$CFG.tmp"
+          mv "$CFG.tmp" "$CFG"
+          echo "Signed endpoints: $want" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create / update the GitHub Release and upload the ZXP
         env:
@@ -65,39 +124,48 @@ jobs:
           else
             gh release create "$TAG" "$ZXP" --title "$TAG" --notes "${NOTES:-Release $TAG}"
           fi
+          # the asset as served must be the file we checked
+          served="$(gh release download "$TAG" -p "$(basename "$ZXP")" -O - | sha256sum | cut -d' ' -f1)"
+          if [ "$served" != "$ZXP_SHA256" ]; then
+            echo "::error::uploaded asset has SHA-256 $served, expected $ZXP_SHA256"
+            exit 1
+          fi
           echo "Release $TAG ready with asset $(basename "$ZXP")"
 
-      - name: Sign latest.json via the licensing Worker (release asset URL)
+      - name: Sign latest.json via the licensing Worker
         env:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
-          WORKER_URL: ${{ vars.WORKER_URL || 'https://plugin-licensing.lnidasan.workers.dev' }}
           MANDATORY: ${{ inputs.mandatory }}
         run: |
           set -euo pipefail
           if [ -z "${ADMIN_TOKEN:-}" ]; then
-            echo "::error::ADMIN_TOKEN secret is not set. Add it in Settings -> Secrets and variables -> Actions."
+            echo "::error::ADMIN_TOKEN is not available. Add it to the release environment (see RELEASE.md)."
             exit 1
           fi
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "$ZXP")"
           echo "Announcing $VERSION -> $URL"
-          body=$(jq -nc --arg p mojibunkai --arg v "$VERSION" --arg u "$URL" --arg n "$NOTES" --argjson m "${MANDATORY:-false}" \
-            '{product:$p, version:$v, url:$u, notes:$n, mandatory:$m}')
-          resp=$(curl -sS -X POST "${WORKER_URL%/}/admin/release" \
-            -H "authorization: Bearer ${ADMIN_TOKEN}" -H 'content-type: application/json' -d "$body")
-          if ! echo "$resp" | jq -e '.ok == true' >/dev/null 2>&1; then
-            echo "::error::signing failed: $(echo "$resp" | jq -r '.error // "unknown"')"
+          body="$(jq -nc --arg p mojibunkai --arg v "$VERSION" --arg u "$URL" --arg h "$ZXP_SHA256" --arg n "$NOTES" --argjson m "${MANDATORY:-false}" \
+            '{product:$p, version:$v, url:$u, sha256:$h, notes:$n, mandatory:$m}')"
+          resp="$(curl -sS -X POST "${WORKER_URL%/}/admin/release" \
+            -H "authorization: Bearer ${ADMIN_TOKEN}" -H 'content-type: application/json' -d "$body")"
+          if ! printf '%s' "$resp" | jq -e '.ok == true' >/dev/null 2>&1; then
+            echo "::error::signing failed: $(printf '%s' "$resp" | jq -r '.error // "unknown"')"
             exit 1
           fi
-          echo "$resp" | jq '{token: .manifest.token}' > mojibunkai/latest.json
+          if ! printf '%s' "$resp" | jq -e --arg h "$ZXP_SHA256" --arg u "$URL" '.payload.sha256 == $h and .payload.url == $u' >/dev/null; then
+            echo "::error::the signed manifest does not carry this file's hash/url (is the current Worker deployed?)"
+            exit 1
+          fi
+          printf '%s' "$resp" | jq '{token: .manifest.token}' > mojibunkai/latest.json
           echo "Wrote mojibunkai/latest.json"
 
-      - name: Commit latest.json and drop the in-repo ZXP
+      - name: Commit and drop the in-repo ZXP
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git rm --quiet --ignore-unmatch "$ZXP"
-          git add mojibunkai/latest.json
+          git add mojibunkai/latest.json mojibunkai/config.json
           if git diff --cached --quiet; then
             echo "nothing to commit."
             exit 0
